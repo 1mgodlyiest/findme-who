@@ -57,6 +57,31 @@ CMS_FRAMEWORKS = {"Wordpress": "WordPress", "Shopify": "Shopify", "Wix": "Wix",
                   "Squarespace": "Squarespace", "Webflow": "Webflow", "Drupal": "Drupal",
                   "Joomla": "Joomla", "Magento": "Magento"}
 
+# MX host substring -> friendly mail provider label.
+_MAIL_PROVIDERS = [
+    ("google", "Google Workspace"), ("googlemail", "Google Workspace"),
+    ("outlook", "Microsoft 365"), ("microsoft", "Microsoft 365"),
+    ("office365", "Microsoft 365"), ("protection.outlook", "Microsoft 365"),
+    ("zoho", "Zoho Mail"), ("secureserver.net", "GoDaddy"),
+    ("mailgun", "Mailgun"), ("sendgrid", "SendGrid"), ("pphosted", "Proofpoint"),
+    ("messagelabs", "Symantec"), ("mimecast", "Mimecast"),
+]
+
+
+def classify_mail_provider(mx_host: str, domain: str) -> str:
+    """Friendly label from an MX hostname. Self-hosted/cPanel when the MX is the
+    domain itself (mail.domain / domain)."""
+    h = (mx_host or "").lower().strip(".")
+    if not h:
+        return "Unknown"
+    for needle, label in _MAIL_PROVIDERS:
+        if needle in h:
+            return label
+    if h == domain or h.endswith("." + domain) or h.startswith("mail."):
+        return "cPanel / Self-Hosted"
+    return h  # unknown third-party — keep the raw host
+
+
 EMAIL_REGEX = re.compile(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+")
 AU_PHONE_REGEX = re.compile(r"(?:\+?61\s?|0)(?:[2-478]\s?\d{4}\s?\d{4}|4\d{2}\s?\d{3}\s?\d{3}|1300\s?\d{3}\s?\d{3}|1800\s?\d{3}\s?\d{3})")
 RAW_DIGITS_REGEX = re.compile(r"\D")
@@ -90,6 +115,65 @@ def _has_dmarc(domain: str) -> bool:
         return False
 
 
+def _domain_created_year(domain: str) -> str:
+    """Registration year via RDAP (rdap.org), which exposes creation dates that
+    restricted WHOIS (e.g. .au) hides. '' if unavailable."""
+    try:
+        import requests
+        r = requests.get(f"https://rdap.org/domain/{domain}", timeout=8,
+                         headers={"User-Agent": "Mozilla/5.0"})
+        if r.status_code != 200:
+            return ""
+        for ev in r.json().get("events", []):
+            if ev.get("eventAction") == "registration":
+                m = re.match(r"(\d{4})", ev.get("eventDate", ""))
+                if m:
+                    return m.group(1)
+    except Exception:
+        pass
+    return ""
+
+
+def _check_ssl(domain: str) -> str:
+    """'Yes' if domain:443 serves a valid, in-date cert; 'No' if the cert is
+    present but invalid/expired; '' if HTTPS couldn't be reached. Done directly
+    (stdlib) because sfp_sslcert emits nothing reliably in this environment."""
+    import socket
+    import ssl
+    try:
+        ctx = ssl.create_default_context()
+        with socket.create_connection((domain, 443), timeout=6) as sock:
+            with ctx.wrap_socket(sock, server_hostname=domain) as ss:
+                ss.getpeercert()  # raises on expiry / hostname mismatch
+        return "Yes"
+    except ssl.SSLError:
+        return "No"
+    except Exception:
+        return ""
+
+
+# COMPANY_NAME values that are domain registrars/registries (from WHOIS), not
+# the actual business — skip them.
+_COMPANY_NOISE = ("identity digital", "domain administration", "registry",
+                  "registrar", "auda", "godaddy", "namecheap", "cloudflare",
+                  "whois", "redacted", "privacy", "tucows", "domains", "dynadot")
+
+
+def _company_relates_to_domain(company: str, domain: str) -> bool:
+    """Keep a COMPANY_NAME only if it plausibly belongs to THIS business, not a
+    registrar. sfp_company emits registrar names from WHOIS (Dynadot, Identity
+    Digital, ...) which never share a word with the domain. Accept when the
+    domain's core label overlaps the company text either way."""
+    c = re.sub(r"[^a-z0-9]", "", company.lower())
+    if not c or any(n in company.lower() for n in _COMPANY_NOISE):
+        return False
+    core = domain.split(".")[0]
+    if core in c or c in core:
+        return True
+    # any 4+ char company word appearing in the domain core
+    return any(w in core for w in re.findall(r"[a-z]{4,}", company.lower()))
+
+
 def format_and_classify_phone(raw_phone: str) -> tuple[str, str]:
     """Classify Australian phone into Mobile (SMS-Ready) vs Landline."""
     digits = RAW_DIGITS_REGEX.sub("", raw_phone)
@@ -112,7 +196,7 @@ def format_and_classify_phone(raw_phone: str) -> tuple[str, str]:
 
     return formatted, phone_type
 
-def enrich_domain(domain_raw: str, max_pages: int = 25, timeout: int = 45,
+def enrich_domain(domain_raw: str, max_pages: int = 25, timeout: int = 90,
                   deep: bool = False) -> dict:
     """
     Enriches a single domain through findme-who's passive event graph.
@@ -146,10 +230,11 @@ def enrich_domain(domain_raw: str, max_pages: int = 25, timeout: int = 45,
         "created_year": "",
         "domain_age_years": "",
         "mail_provider": "Unknown",
+        "mail_host": "",
         "spf_configured": "No",
         "dmarc_configured": "No",
-        "latest_snapshot_year": "",
         "cms": "Custom / Unknown",
+        "web_server": "",
         "has_meta_pixel": "No",
         "has_gtm": "No",
         "has_ga4": "No",
@@ -164,7 +249,7 @@ def enrich_domain(domain_raw: str, max_pages: int = 25, timeout: int = 45,
         "facebook": "",
         "linkedin": "",
         "instagram": "",
-        "ssl_valid": "No"
+        "ssl_valid": ""
     }
 
     try:
@@ -265,7 +350,8 @@ def enrich_domain(domain_raw: str, max_pages: int = 25, timeout: int = 45,
                         record["page_title"] = tm.group(1).strip()[:100]
 
                 elif evt_type == "PROVIDER_MAIL":
-                    record["mail_provider"] = data
+                    record["mail_host"] = data
+                    record["mail_provider"] = classify_mail_provider(data, domain)
 
                 elif evt_type == "DNS_SPF":
                     record["spf_configured"] = "Yes"
@@ -295,7 +381,9 @@ def enrich_domain(domain_raw: str, max_pages: int = 25, timeout: int = 45,
                     if "meta pixel" in d_low:
                         record["has_meta_pixel"] = "Yes"
 
-                elif evt_type == "EMAILADDR":
+                elif evt_type in ("EMAILADDR", "EMAILADDR_GENERIC"):
+                    # GENERIC = info@/sales@/contact@ etc. — the cold-outreach
+                    # addresses, emitted as a separate type; capture both.
                     em = data.lower()
                     # Scope to the target domain — dnsresolve/sslcert/accounts pull in
                     # affiliate/co-hosted domains we don't want in the lead's email list.
@@ -303,6 +391,10 @@ def enrich_domain(domain_raw: str, max_pages: int = 25, timeout: int = 45,
                     if (EMAIL_REGEX.match(em) and (edom == domain or edom.endswith("." + domain))
                             and not any(x in em for x in ["example.com", "sentry.io", "wixpress"])):
                         emails.add(em)
+
+                elif evt_type in ("WEBSERVER_BANNER", "WEBSERVER_TECHNOLOGY"):
+                    if not record["web_server"]:
+                        record["web_server"] = data[:80]
 
                 elif evt_type == "PHONE_NUMBER":
                     phones.add(data)
@@ -312,28 +404,42 @@ def enrich_domain(domain_raw: str, max_pages: int = 25, timeout: int = 45,
                         names.add(data)
 
                 elif evt_type == "COMPANY_NAME":
-                    companies.add(data)
+                    if _company_relates_to_domain(data, domain):
+                        companies.add(data)
 
                 elif evt_type == "SOCIAL_MEDIA":
-                    d_low = data.lower()
+                    # data looks like "Facebook: <SFURL>https://...</SFURL>" — pull the URL
+                    m = re.search(r"https?://[^\s<>\"]+", data)
+                    url = m.group(0) if m else ""
+                    d_low = url.lower()
                     if "facebook.com/" in d_low and not socials.get("facebook"):
-                        socials["facebook"] = data
+                        socials["facebook"] = url
                     elif "linkedin.com/" in d_low and not socials.get("linkedin"):
-                        socials["linkedin"] = data
+                        socials["linkedin"] = url
                     elif "instagram.com/" in d_low and not socials.get("instagram"):
-                        socials["instagram"] = data
+                        socials["instagram"] = url
 
-                elif evt_type in ["SSL_CERTIFICATE_ISSUER", "SSL_CERTIFICATE_EXPIRY"]:
-                    record["ssl_valid"] = "Yes"
-
-                elif evt_type == "INTERESTING_FILE_HISTORIC" or "HISTORIC" in evt_type:
-                    match = re.search(r"\b(20\d{2})\b", data)
-                    if match:
-                        record["latest_snapshot_year"] = match.group(1)
+                elif evt_type == "SSL_CERTIFICATE_ISSUED":
+                    if record["ssl_valid"] != "No":     # don't upgrade an expired verdict
+                        record["ssl_valid"] = "Yes"     # a cert was retrieved and parsed
+                elif evt_type == "SSL_CERTIFICATE_EXPIRED":
+                    record["ssl_valid"] = "No"          # present but expired — wins regardless of order
 
         # DMARC — one direct lookup (_dmarc. subdomain, which no module queries)
         if _has_dmarc(domain):
             record["dmarc_configured"] = "Yes"
+
+        # SSL — direct check (sfp_sslcert is unreliable); overrides any module value
+        ssl_status = _check_ssl(domain)
+        if ssl_status:
+            record["ssl_valid"] = ssl_status
+
+        # Domain age — RDAP fallback when WHOIS didn't yield a creation year
+        if not record["created_year"]:
+            yr = _domain_created_year(domain)
+            if yr:
+                record["created_year"] = yr
+                record["domain_age_years"] = str(max(0, time.gmtime().tm_year - int(yr)))
 
         # Fallback / Normalize Emails
         if emails:
@@ -387,7 +493,7 @@ def enrich_domain(domain_raw: str, max_pages: int = 25, timeout: int = 45,
     return record
 
 def enrich_batch(domains: list[str], max_pages: int = 25, max_workers: int = 5,
-                 timeout: int = 45, deep: bool = False) -> list[dict]:
+                 timeout: int = 90, deep: bool = False) -> list[dict]:
     """
     Enriches a batch of domains concurrently.
 
@@ -432,6 +538,15 @@ def _selfcheck() -> None:
     # Deep modules are opt-in only — never in the fast base pass
     assert not (set(DEEP_MODULES) & set(BASE_MODULES))
     assert "sfp_accounts" in DEEP_MODULES and "sfp_accounts" not in BASE_MODULES
+    # Mail provider classification
+    assert classify_mail_provider("aspmx.l.google.com", "x.com") == "Google Workspace"
+    assert classify_mail_provider("x.com-mail.protection.outlook.com", "x.com") == "Microsoft 365"
+    assert classify_mail_provider("mail.x.com", "x.com") == "cPanel / Self-Hosted"
+    assert classify_mail_provider("", "x.com") == "Unknown"
+    # Company name must relate to the domain — registrars are rejected
+    assert _company_relates_to_domain("Bondi Dental Pty Ltd", "bondidental.com.au")
+    assert not _company_relates_to_domain("DYNADOT LLC", "bondidental.com.au")
+    assert not _company_relates_to_domain("Identity Digital Australia", "bondidental.com.au")
     print("engine self-check OK")
 
 

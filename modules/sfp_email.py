@@ -11,7 +11,22 @@
 # Licence:     MIT
 # -------------------------------------------------------------------------------
 
+import re
+
 from spiderfoot import SpiderFootEvent, SpiderFootHelpers, SpiderFootPlugin
+
+# Cloudflare obfuscates addresses as <a data-cfemail="HEX">; the plaintext is the
+# hex XOR'd with the first byte. Regex extraction alone misses these entirely.
+_CFEMAIL_RE = re.compile(r'data-cfemail="([0-9a-fA-F]{6,})"')
+
+
+def _decode_cfemail(hexstr: str) -> str:
+    try:
+        key = int(hexstr[:2], 16)
+        return "".join(chr(int(hexstr[i:i + 2], 16) ^ key)
+                       for i in range(2, len(hexstr), 2))
+    except Exception:
+        return ""
 
 
 class sfp_email(SpiderFootPlugin):
@@ -56,8 +71,13 @@ class sfp_email(SpiderFootPlugin):
 
         self.debug(f"Received event, {eventName}, from {srcModuleName}")
 
-        emails = SpiderFootHelpers.extractEmailsFromText(eventData)
-        for email in set(emails):
+        emails = set(SpiderFootHelpers.extractEmailsFromText(eventData))
+        # Also recover Cloudflare-obfuscated addresses from raw page content.
+        for hexstr in _CFEMAIL_RE.findall(eventData):
+            decoded = _decode_cfemail(hexstr)
+            if "@" in decoded and "." in decoded.split("@")[-1]:
+                emails.add(decoded)
+        for email in emails:
             evttype = "EMAILADDR"
             email = email.lower()
 
