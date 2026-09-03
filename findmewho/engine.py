@@ -206,21 +206,32 @@ def enrich_domain(domain_raw: str, max_pages: int = 25, timeout: int = 45,
 
         dbh = SpiderFootDb(sf_config)
 
-        # Start Scanner
-        scanner = SpiderFootScanner(
-            scanName=scan_name,
-            scanId=scan_id,
-            targetValue=domain,
-            targetType="INTERNET_NAME",
-            moduleList=module_list,
-            globalOpts=sf_config,
-            start=True
-        )
+        # SpiderFootScanner(start=True) runs the whole scan INLINE in __init__
+        # (it blocks in waitForThreads), so a slow/dead domain would run
+        # unbounded and, across a batch, pile up threads. Run it in a daemon
+        # thread and enforce `timeout`: if it overruns, flip the scan status to
+        # ABORT-REQUESTED so every module's checkForStop() bails on its next
+        # cycle, then read whatever events already landed.
+        def _run_scan():
+            try:
+                SpiderFootScanner(
+                    scanName=scan_name, scanId=scan_id, targetValue=domain,
+                    targetType="INTERNET_NAME", moduleList=module_list,
+                    globalOpts=sf_config, start=True,
+                )
+            except Exception:
+                pass  # abort surfaces here as AssertionError; results still stored
 
-        # start=True runs the scan inline in the constructor (it blocks via
-        # waitForThreads), so by here the scan is already done. `status` is a
-        # property, not getStatus(). maxpages is the real runtime bound, not `timeout`.
-        _ = scanner.status
+        import threading
+        scan_thread = threading.Thread(target=_run_scan, daemon=True)
+        scan_thread.start()
+        scan_thread.join(timeout)
+        if scan_thread.is_alive():
+            try:
+                dbh.scanInstanceSet(scan_id, status="ABORT-REQUESTED")
+            except Exception:
+                pass
+            scan_thread.join(10)  # grace for modules to wind down (bounded by _fetchtimeout)
 
         # Harvest emitted events from DB
         import sqlite3
