@@ -1,98 +1,92 @@
 # findme-who
 
-**findme-who** is a high-speed, 100% passive B2B lead enrichment engine built for Australian business intelligence.
+**findme-who** is a high-speed, 100% passive OSINT, domain reconnaissance, and digital footprint intelligence engine.
 
-Zero API keys. Zero Port 25. Zero cost.
+Designed and authored by **Manish Paneru**, `findme-who` distills advanced passive reconnaissance into a streamlined, high-performance Python library and CLI tool.
 
-It deep-crawls business websites and passively pulls contact data, tech stack signals, and digital maturity indicators across a batch of domains in seconds.
+Zero paid API keys. Zero active port scans. Zero Port 25 probing. 100% passive intelligence.
 
 ---
 
-## What It Extracts
+## ⚡ Key Capabilities
 
-| Signal | Detail |
+| Intelligence Layer | Extracted Signals |
 |---|---|
-| **Primary Email** | Mailto links, Cloudflare-obfuscated emails, on-page text |
-| **All Emails** | Full list including subpage crawl results |
-| **Mobile Phone** | Australian `04XX` numbers — SMS-ready |
-| **Landline Phone** | `(02)/(03)/(07)/(08)` formatted numbers |
-| **Phone Type** | `Mobile (SMS-Ready)` / `Landline` / `Toll-Free` |
-| **CMS / Stack** | WordPress, Wix, Squarespace, Shopify, Webflow, Drupal |
-| **Meta Pixel** | Active Facebook ad spend detection |
-| **Google Tag Manager** | GTM container detection |
-| **Mail Provider** | Google Workspace, Microsoft 365, cPanel / Self-Hosted |
-| **DMARC / SPF** | Email spoofing vulnerability check |
-| **Domain Age** | Creation year and years since registration (via RDAP) |
-| **Wayback Snapshot** | Last Wayback Machine archive year |
-| **SSL Status** | Valid / Expired + days remaining |
-| **Facebook** | Linked business page URL |
-| **LinkedIn** | Linked company or personal page URL |
-| **Instagram** | Linked business profile URL |
-| **Mobile Responsive** | Viewport meta tag detection |
+| **Domain & Registration** | Creation date, domain age, registrar details via RDAP/WHOIS, and Wayback historical redesign snapshots |
+| **Mail & Security Posture** | Mail service provider detection (Google Workspace, Microsoft 365, cPanel/Self-hosted), SPF & DMARC configuration status |
+| **Tech Stack & CMS** | Framework and CMS identification (WordPress, Shopify, Squarespace, Wix, Webflow, Drupal, etc.) |
+| **Marketing & Analytics** | Active tracking pixels (Meta/Facebook Pixel, Google Tag Manager container, Google Analytics 4) |
+| **Contact Intelligence** | Direct email extraction (DOM text, mailto attributes, Cloudflare email decoding), phone number discovery & classification (Mobile vs. Landline vs. Toll-Free) |
+| **Social & Digital Footprint** | Connected social profiles (Facebook, LinkedIn, Instagram), Gravatar presence, brand identity verification |
+| **Web Infrastructure** | Webserver signatures, SSL/TLS certificate validity, issuer, and expiration |
 
 ---
 
-## How It Works
+## 🚀 Installation
 
-findme-who uses a **4-layer passive contact extraction waterfall**:
-
+### Local Installation
+Clone the repository and install in editable mode:
+```bash
+git clone https://github.com/1mgodlyiest/findme-who.git
+cd findme-who
+pip install -e .
 ```
-[1] Schema.org JSON-LD  ──► Official Google SEO structured data (telephone, email)
-[2] Cloudflare Decoder  ──► Decodes data-cfemail="" obfuscated emails
-[3] Mailto / Tel Links  ──► Direct href="mailto:" and href="tel:" extraction
-[4] Multi-Page Crawl    ──► Auto-visits /contact, /about, /team, /staff
-```
 
-All phone numbers are classified:
-- `04XX XXX XXX` → **Mobile (SMS-Ready)**
-- `(02) XXXX XXXX` → **Landline**
-- `1300 / 1800` → **Toll-Free**
+### Install Directly via Git
+```bash
+pip install git+https://github.com/1mgodlyiest/findme-who.git
+```
 
 ---
 
-## Usage
+## 💻 Python Library Usage
+
+`findme-who` provides a clean, programmatic interface for single-target analysis or large-scale batch processing:
+
+```python
+import findmewho
+
+# 1. Single Domain Reconnaissance
+domain_data = findmewho.enrich_domain("example.com", max_pages=15)
+print(domain_data["primary_email"])
+print(domain_data["cms"])
+print(domain_data["mail_provider"])
+print(domain_data["domain_age_years"])
+
+# 2. High-Throughput Batch Processing
+domains = ["example1.com", "example2.com", "example3.com"]
+results = findmewho.enrich_batch(domains, max_workers=10, max_pages=20)
+
+for res in results:
+    print(f"{res['domain']}: {res['cms']} | {res['primary_email']}")
+```
+
+---
+
+## 🖥️ Command-Line Interface (CLI)
+
+Run `findme-who` directly from your terminal:
 
 ```bash
-# Enrich a single domain
-python enrich.py bondidental.com.au
+# Analyze a single domain
+findme-who example.com
 
-# Enrich a CSV of domains
-python enrich.py sydney_leads.csv -o sydney_enriched.csv
-
-# Adjust thread count (default 15)
-python enrich.py sydney_leads.csv -o sydney_enriched.csv --threads 20
-```
-
-Your CSV input just needs a column containing domain names or URLs — findme-who auto-detects them.
-
----
-
-## Output
-
-Enriched records are exported as a structured CSV with one row per domain:
-
-```
-domain, page_title, created_year, domain_age_years, mail_provider,
-dmarc_configured, spf_configured, latest_snapshot_year, cms,
-has_meta_pixel, has_gtm, primary_email, all_emails,
-phone, phone_type, mobile_phone, landline_phone,
-mobile_responsive, ssl_valid, facebook, linkedin, instagram
+# Process a CSV list of domains with multi-threaded workers
+findme-who domains.csv -o enriched_results.csv --threads 10 --pages 20
 ```
 
 ---
 
-## Install
+## 🛡️ Core Principles
 
-```bash
-pip install requests dnspython beautifulsoup4 rich
-```
+- **100% Passive & Non-Intrusive:** Never performs active port scanning, vulnerability probing, or Port 25 SMTP connections.
+- **$0 API Dependency:** Operates purely on public DNS records, RDAP, standard HTTP/HTTPS headers, and DOM parsing.
+- **High Concurrency:** Built on a multi-threaded asynchronous event graph for rapid batch reconnaissance.
+- **Clean Output Normalization:** Flattens complex graph events into structured dictionaries and CSV exports.
 
 ---
 
-## Design Rules
+## 👤 Author
 
-- **Zero API keys** — all data pulled from public DNS, RDAP, Wayback Machine, and live HTML
-- **No Port 25** — never probes SMTP; uses passive MX/DMARC/SPF DNS-only checks
-- **No dark web, no threat intel, no port scanning** — pure B2B lead signals only
-- **Multi-threaded** — homepage + up to 3 subpages per domain crawled in parallel
-- **Ponytail** — minimal code, stdlib-first, zero bloat
+**Manish Paneru**  
+*Project Repository:* [https://github.com/1mgodlyiest/findme-who](https://github.com/1mgodlyiest/findme-who)
