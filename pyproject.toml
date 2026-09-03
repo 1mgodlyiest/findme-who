@@ -27,7 +27,8 @@ dependencies = [
     "ipwhois>=1.2.0",
     "adblockparser>=0.7",
     "pyyaml>=6.0",
-    "urllib3>=1.26.0"
+    "urllib3>=1.26.0",
+    "networkx>=3.0"
 ]
 
 [project.scripts]
@@ -36,3 +37,9 @@ findme-who = "findmewho.cli:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["findmewho*", "spiderfoot*", "modules*"]
+
+# sflib.py and sfscan.py are loose top-level modules (not packages), imported by
+# the engine as `from sflib import ...` / `from sfscan import ...`. Without this
+# they'd be missing from an installed wheel and ImportError on first scan.
+[tool.setuptools]
+py-modules = ["sflib", "sfscan"]
