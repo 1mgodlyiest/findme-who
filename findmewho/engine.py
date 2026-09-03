@@ -174,6 +174,56 @@ def _company_relates_to_domain(company: str, domain: str) -> bool:
     return any(w in core for w in re.findall(r"[a-z]{4,}", company.lower()))
 
 
+# --- Decision-maker extraction ---------------------------------------------
+# sfp_names scrapes country/region dropdowns and emits them as HUMAN_NAME
+# ("Sint Maarten", "American Samoa"). Filter those, and prioritise names that
+# appear next to a decision-maker title (Dr / Director / Owner / Founder / ...).
+_COUNTRIES = frozenset("""afghanistan albania algeria andorra angola argentina armenia
+australia austria azerbaijan bahamas bahrain bangladesh barbados belarus belgium belize
+benin bermuda bhutan bolivia botswana brazil brunei bulgaria burundi cambodia cameroon
+canada chad chile china colombia comoros congo croatia cuba cyprus denmark djibouti
+dominica ecuador egypt eritrea estonia ethiopia fiji finland france gabon gambia georgia
+germany ghana greece greenland grenada guam guatemala guinea guyana haiti honduras hungary
+iceland india indonesia iran iraq ireland israel italy jamaica japan jordan kazakhstan kenya
+kiribati kosovo kuwait laos latvia lebanon lesotho liberia libya lithuania luxembourg
+madagascar malawi malaysia maldives mali malta mauritania mauritius mexico moldova monaco
+mongolia montenegro morocco mozambique myanmar namibia nauru nepal netherlands nicaragua
+niger nigeria niue norway oman pakistan palau panama paraguay peru philippines poland
+portugal qatar romania russia rwanda samoa senegal serbia seychelles singapore slovakia
+slovenia somalia spain sudan suriname sweden switzerland syria taiwan tajikistan tanzania
+thailand togo tonga tunisia turkey turkmenistan tuvalu uganda ukraine uruguay uzbekistan
+vanuatu venezuela vietnam yemen zambia zimbabwe""".split())
+_PLACE_PHRASES = ("american samoa", "sint maarten", "tristan cunha", "norfolk island",
+    "cook islands", "cayman islands", "faroe islands", "marshall islands", "solomon islands",
+    "new zealand", "new caledonia", "south africa", "south korea", "north korea", "sri lanka",
+    "saudi arabia", "united states", "united kingdom", "hong kong", "costa rica", "puerto rico",
+    "el salvador", "san marino", "cape verde", "ivory coast", "papua new guinea",
+    "united arab emirates", "dominican republic", "czech republic", "burkina faso",
+    "sierra leone", "new south wales")
+# City / place words — reject any "name" containing one (kills "Invisalign Sydney").
+_CITIES = frozenset("""sydney melbourne brisbane perth adelaide canberra hobart darwin
+newcastle wollongong geelong townsville cairns toowoomba ballarat bendigo launceston
+london dublin auckland bondi parramatta chatswood manly""".split())
+
+_TITLE_RE = re.compile(
+    r"\b(Dr|Doctor|Prof|Professor|Director|Owner|Founder|Principal|Partner|Proprietor|CEO)\.?\s+"
+    r"([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,2})")
+
+
+def _is_person_name(name: str) -> bool:
+    """A plausible 2-3 word personal name, not a place or dropdown junk."""
+    n = name.strip()
+    low = n.lower()
+    words = n.split()
+    if len(words) not in (2, 3):
+        return False
+    if low in _PLACE_PHRASES or any(w.lower() in (_COUNTRIES | _CITIES) for w in words):
+        return False
+    if any(x in low for x in ("copyright", "privacy", "terms", "admin", "select", "choose")):
+        return False
+    return all(w[:1].isupper() and w[1:].islower() for w in words if len(w) > 1)
+
+
 def format_and_classify_phone(raw_phone: str) -> tuple[str, str]:
     """Classify Australian phone into Mobile (SMS-Ready) vs Landline."""
     digits = RAW_DIGITS_REGEX.sub("", raw_phone)
@@ -329,6 +379,7 @@ def enrich_domain(domain_raw: str, max_pages: int = 25, timeout: int = 90,
         emails = set()
         phones = set()
         names = set()
+        titled = []  # names found next to a decision-maker title (higher priority)
         companies = set()
         socials = {}
         techs = set()
@@ -342,12 +393,19 @@ def enrich_domain(domain_raw: str, max_pages: int = 25, timeout: int = 90,
                 if not data:
                     continue
 
-                # No module emits PAGE_TITLE; pull it from the (truncated but
-                # <head>-first) stored homepage HTML instead.
-                if evt_type == "TARGET_WEB_CONTENT" and not record["page_title"]:
-                    tm = re.search(r"<title[^>]*>([^<]+)</title>", data, re.IGNORECASE)
-                    if tm:
-                        record["page_title"] = tm.group(1).strip()[:100]
+                # No module emits PAGE_TITLE; pull it from the stored homepage
+                # HTML, and harvest titled decision-maker names from page text.
+                if evt_type == "TARGET_WEB_CONTENT":
+                    if not record["page_title"]:
+                        tm = re.search(r"<title[^>]*>([^<]+)</title>", data, re.IGNORECASE)
+                        if tm:
+                            record["page_title"] = tm.group(1).strip()[:100]
+                    for title_word, nm in _TITLE_RE.findall(data):
+                        label = nm if title_word.lower() in ("director", "owner",
+                            "founder", "principal", "partner", "proprietor", "ceo") \
+                            else f"Dr {nm}"
+                        if _is_person_name(nm) and label not in titled:
+                            titled.append(label)
 
                 elif evt_type == "PROVIDER_MAIL":
                     record["mail_host"] = data
@@ -400,7 +458,7 @@ def enrich_domain(domain_raw: str, max_pages: int = 25, timeout: int = 90,
                     phones.add(data)
 
                 elif evt_type == "HUMAN_NAME":
-                    if len(data.split()) in [2, 3] and not any(x in data.lower() for x in ["copyright", "privacy", "terms", "admin"]):
+                    if _is_person_name(data):
                         names.add(data)
 
                 elif evt_type == "COMPANY_NAME":
@@ -473,8 +531,15 @@ def enrich_domain(domain_raw: str, max_pages: int = 25, timeout: int = 90,
             record["phone"] = tollfrees[0]
             record["phone_type"] = "Toll-Free"
 
-        if names:
-            record["decision_makers"] = "; ".join(list(names)[:3])
+        # Titled names first (Dr/Director/Owner…), then plain names, deduped.
+        seen_dm, dm = set(), []
+        for n in titled + [x for x in names if x not in {t.replace("Dr ", "") for t in titled}]:
+            base = n.replace("Dr ", "")
+            if base not in seen_dm:
+                seen_dm.add(base)
+                dm.append(n)
+        if dm:
+            record["decision_makers"] = "; ".join(dm[:3])
         if companies:
             record["company_name"] = list(companies)[0]
 
@@ -547,6 +612,15 @@ def _selfcheck() -> None:
     assert _company_relates_to_domain("Bondi Dental Pty Ltd", "bondidental.com.au")
     assert not _company_relates_to_domain("DYNADOT LLC", "bondidental.com.au")
     assert not _company_relates_to_domain("Identity Digital Australia", "bondidental.com.au")
+    # Decision-maker filter: real names in, dropdown/country junk out
+    assert _is_person_name("Jane Smith") and _is_person_name("Mark Van Damme")
+    assert not _is_person_name("Sint Maarten")
+    assert not _is_person_name("American Samoa")
+    assert not _is_person_name("New South Wales")
+    assert not _is_person_name("Select Country")
+    assert not _is_person_name("Invisalign Sydney")  # city word
+    assert _TITLE_RE.findall("Dr Jane Smith and Director Bob Lee") == \
+        [("Dr", "Jane Smith"), ("Director", "Bob Lee")]
     print("engine self-check OK")
 
 
