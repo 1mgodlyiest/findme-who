@@ -179,63 +179,36 @@ class SpiderFoot:
 
         return val
 
-    def error(self, message: str) -> None:
-        """Print and log an error message
-
-        Args:
-            message (str): error message
-        """
-        if not self.opts['__logging']:
+    def error(self, message: str, *args, **kwargs) -> None:
+        """Print and log an error message"""
+        if not self.opts.get('__logging'):
             return
+        self.log.error(message, extra={'scanId': self._scanId}, **kwargs)
 
-        self.log.error(message, extra={'scanId': self._scanId})
-
-    def fatal(self, error: str) -> None:
-        """Print an error message and stacktrace then exit.
-
-        Args:
-            error (str): error message
-        """
-        self.log.critical(error, extra={'scanId': self._scanId})
-
-        print(str(inspect.stack()))
-
+    def fatal(self, error: str, *args, **kwargs) -> None:
+        """Print an error message and stacktrace then exit."""
+        self.log.critical(error, extra={'scanId': self._scanId}, **kwargs)
         sys.exit(-1)
 
-    def status(self, message: str) -> None:
-        """Log and print a status message.
-
-        Args:
-            message (str): status message
-        """
-        if not self.opts['__logging']:
+    def status(self, message: str, *args, **kwargs) -> None:
+        """Log and print a status message."""
+        if not self.opts.get('__logging'):
             return
+        self.log.info(message, extra={'scanId': self._scanId}, **kwargs)
 
-        self.log.info(message, extra={'scanId': self._scanId})
-
-    def info(self, message: str) -> None:
-        """Log and print an info message.
-
-        Args:
-            message (str): info message
-        """
-        if not self.opts['__logging']:
+    def info(self, message: str, *args, **kwargs) -> None:
+        """Log and print an info message."""
+        if not self.opts.get('__logging'):
             return
+        self.log.info(f"{message}", extra={'scanId': self._scanId}, **kwargs)
 
-        self.log.info(f"{message}", extra={'scanId': self._scanId})
-
-    def debug(self, message: str) -> None:
-        """Log and print a debug message.
-
-        Args:
-            message (str): debug message
-        """
-        if not self.opts['_debug']:
+    def debug(self, message: str, *args, **kwargs) -> None:
+        """Log and print a debug message."""
+        if not self.opts.get('_debug'):
             return
-        if not self.opts['__logging']:
+        if not self.opts.get('__logging'):
             return
-
-        self.log.debug(f"{message}", extra={'scanId': self._scanId})
+        self.log.debug(f"{message}", extra={'scanId': self._scanId}, **kwargs)
 
     def hashstring(self, string: str) -> str:
         """Returns a SHA256 hash of the specified input.
@@ -1127,16 +1100,12 @@ class SpiderFoot:
         Returns:
             bool: IP address is local or loopback
         """
-        if not self.validIP(ip) and not self.validIP6(ip):
+        try:
+            import ipaddress
+            ip_obj = ipaddress.ip_address(ip)
+            return ip_obj.is_private or ip_obj.is_loopback
+        except Exception:
             return False
-
-        if netaddr.IPAddress(ip).is_private():
-            return True
-
-        if netaddr.IPAddress(ip).is_loopback():
-            return True
-
-        return False
 
     def useProxyForUrl(self, url: str) -> bool:
         """Check if the configured proxy should be used to connect to a specified URL.
@@ -1170,10 +1139,8 @@ class SpiderFoot:
             return False
 
         # Never proxy RFC1918 addresses on the LAN or the local network interface
-        if self.validIP(host):
-            if netaddr.IPAddress(host).is_private():
-                return False
-            if netaddr.IPAddress(host).is_loopback():
+        if self.validIP(host) or self.validIP6(host):
+            if self.isValidLocalOrLoopbackIp(host):
                 return False
 
         # Never proxy local hostnames

@@ -105,11 +105,20 @@ class sfp_whois(SpiderFootPlugin):
                 self.error(f"Unable to perform WHOIS query on {ip}: {e}")
         else:
             self.debug(f"Sending WHOIS query for domain: {eventData}")
+            whoisdata = None
             try:
                 whoisdata = whois.whois(eventData)
-                data = str(whoisdata.text)
+                data = str(whoisdata.text) if hasattr(whoisdata, 'text') else str(whoisdata)
             except Exception as e:
                 self.error(f"Unable to perform WHOIS query on {eventData}: {e}")
+
+            if not data or len(str(data)) < 50:
+                try:
+                    rdap_res = self.sf.fetchUrl(f"https://rdap.org/domain/{eventData}", timeout=5)
+                    if rdap_res and rdap_res.get('content'):
+                        data = str(rdap_res['content'])
+                except Exception:
+                    pass
 
         if not data:
             self.error(f"No WHOIS record for {eventData}")
