@@ -60,6 +60,8 @@ def clean_domain_input(url_or_domain: str) -> str:
     parsed = urlparse(val)
     domain = parsed.netloc or parsed.path
     domain = domain.split(":")[0].split("/")[0]
+    if domain.startswith("www."):
+        domain = domain[4:]
     return domain
 
 def format_and_classify_phone(raw_phone: str) -> tuple[str, str]:
@@ -140,6 +142,14 @@ def enrich_domain(domain_raw: str, max_pages: int = 25, timeout: int = 45) -> di
         mod_dir = os.path.join(FINDMEWHO_ROOT, "modules")
         sf_modules = SpiderFootHelpers.loadModulesAsDict(mod_dir, ['sfp_template.py'])
 
+        # Cap the spider on its OWN opts dict — the scanner reads self.opts['maxpages'],
+        # NOT a global '_modules.sfp_spider.*' key, so overriding here is what actually applies.
+        if 'sfp_spider' in sf_modules:
+            sf_modules['sfp_spider']['opts'].update({
+                'maxpages': max_pages, 'maxlevels': 2, 'pausesec': 0,
+                'filtermime': ['image/', 'video/', 'audio/'],
+            })
+
         # Base SpiderFoot options
         sf_config = {
             '_debug': False,
@@ -161,10 +171,6 @@ def enrich_domain(domain_raw: str, max_pages: int = 25, timeout: int = 45) -> di
             '_socks3port': '',
             '_socks4user': '',
             '_socks5pwd': '',
-            '_modules.sfp_spider.maxpages': max_pages,
-            '_modules.sfp_spider.maxlevels': 2,
-            '_modules.sfp_spider.pausesec': 0,
-            '_modules.sfp_spider.filtermime': ['image/', 'video/', 'audio/']
         }
 
         dbh = SpiderFootDb(sf_config)
@@ -180,12 +186,10 @@ def enrich_domain(domain_raw: str, max_pages: int = 25, timeout: int = 45) -> di
             start=True
         )
 
-        start_time = time.time()
-        while time.time() - start_time < timeout:
-            status = scanner.getStatus()
-            if status in ["FINISHED", "ABORTED", "ERROR-FAILED"]:
-                break
-            time.sleep(0.5)
+        # start=True runs the scan inline in the constructor (it blocks via
+        # waitForThreads), so by here the scan is already done. `status` is a
+        # property, not getStatus(). maxpages is the real runtime bound, not `timeout`.
+        _ = scanner.status
 
         # Harvest emitted events from DB
         import sqlite3
@@ -211,14 +215,21 @@ def enrich_domain(domain_raw: str, max_pages: int = 25, timeout: int = 45) -> di
                 if not data:
                     continue
 
-                if evt_type == "PAGE_TITLE" and not record["page_title"]:
-                    record["page_title"] = data[:100]
+                # No module emits PAGE_TITLE; pull it from the (truncated but
+                # <head>-first) stored homepage HTML instead.
+                if evt_type == "TARGET_WEB_CONTENT" and not record["page_title"]:
+                    tm = re.search(r"<title[^>]*>([^<]+)</title>", data, re.IGNORECASE)
+                    if tm:
+                        record["page_title"] = tm.group(1).strip()[:100]
 
                 elif evt_type == "PROVIDER_MAIL":
                     record["mail_provider"] = data
 
-                elif evt_type in ["DOMAIN_REGISTRATION_DATE", "RAW_RIR_DATA"]:
-                    # Look for 4-digit creation year
+                elif evt_type == "DNS_SPF":
+                    record["spf_configured"] = "Yes"
+
+                elif evt_type == "RAW_RIR_DATA":
+                    # Look for 4-digit creation year (whois has no dedicated date event here)
                     match = re.search(r"\b(19\d{2}|20\d{2})\b", data)
                     if match and not record["created_year"]:
                         yr = int(match.group(1))
@@ -226,22 +237,27 @@ def enrich_domain(domain_raw: str, max_pages: int = 25, timeout: int = 45) -> di
                             record["created_year"] = str(yr)
                             record["domain_age_years"] = str(max(0, time.gmtime().tm_year - yr))
 
-                elif evt_type == "WEB_FRAMEWORK":
+                elif evt_type == "URL_WEB_FRAMEWORK":
                     techs.add(data)
-                    record["cms"] = data
+                    if data.lower() == "wordpress":
+                        record["cms"] = "WordPress"
 
-                elif evt_type in ["TRACKER_ID", "WEB_ANALYTICS_ID"]:
+                elif evt_type == "WEB_ANALYTICS_ID":
+                    # Payloads look like "Google Tag Manager: GTM-xxx", "Google Analytics: UA-xxx".
+                    # This module detects UA/GTM/AdSense only — no Meta Pixel, no GA4 G- IDs.
                     d_low = data.lower()
-                    if "pixel" in d_low or "facebook" in d_low or "meta" in d_low:
-                        record["has_meta_pixel"] = "Yes"
-                    if "gtm" in d_low or "google tag manager" in d_low:
+                    if "tag manager" in d_low:
                         record["has_gtm"] = "Yes"
-                    if "ga4" in d_low or "g-" in d_low:
+                    if "google analytics" in d_low:
                         record["has_ga4"] = "Yes"
 
                 elif evt_type == "EMAILADDR":
                     em = data.lower()
-                    if EMAIL_REGEX.match(em) and not any(x in em for x in ["example.com", "sentry.io", "wixpress"]):
+                    # Scope to the target domain — dnsresolve/sslcert/accounts pull in
+                    # affiliate/co-hosted domains we don't want in the lead's email list.
+                    edom = em.split("@")[-1]
+                    if (EMAIL_REGEX.match(em) and (edom == domain or edom.endswith("." + domain))
+                            and not any(x in em for x in ["example.com", "sentry.io", "wixpress"])):
                         emails.add(em)
 
                 elif evt_type == "PHONE_NUMBER":
@@ -349,3 +365,19 @@ def enrich_batch(domains: list[str], max_pages: int = 25, max_workers: int = 5, 
                 pass
 
     return results
+
+
+def _selfcheck() -> None:
+    """Offline check of the deterministic parsers (the scan needs network)."""
+    assert clean_domain_input("https://www.Bondidental.com.au/contact") == "bondidental.com.au"
+    assert clean_domain_input("EXAMPLE.COM") == "example.com"
+    assert format_and_classify_phone("0412 345 678")[1] == "mobile"
+    assert format_and_classify_phone("+61 2 8197 4002")[1] == "landline"
+    assert format_and_classify_phone("(07) 2480 9414")[1] == "landline"
+    assert format_and_classify_phone("garbage")[1] == "unknown"
+    assert EMAIL_REGEX.match("info@bondidental.com.au")
+    print("engine self-check OK")
+
+
+if __name__ == "__main__":
+    _selfcheck()
