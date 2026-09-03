@@ -154,6 +154,25 @@ class sfp_webanalytics(SpiderFootPlugin):
                 evt.moduleDataSource = datasource
                 self.notifyListeners(evt)
 
+            # Google Analytics 4 (G-XXXXXXXX measurement IDs)
+            matches = re.findall(r"\b(G-[A-Z0-9]{6,12})\b", eventData)
+            for m in set(matches):
+                self.debug("Google Analytics 4 match: " + m)
+                evt = SpiderFootEvent("WEB_ANALYTICS_ID",
+                                      "Google Analytics 4: " + m,
+                                      self.__name__, event)
+                evt.moduleDataSource = datasource
+                self.notifyListeners(evt)
+
+            # Meta (Facebook) Pixel
+            if re.search(r"fbevents\.js|fbq\(\s*['\"]init['\"]", eventData, re.IGNORECASE):
+                pid = re.search(r"fbq\(\s*['\"]init['\"]\s*,\s*['\"](\d{6,20})['\"]", eventData)
+                evt = SpiderFootEvent("WEB_ANALYTICS_ID",
+                                      "Meta Pixel: " + (pid.group(1) if pid else "detected"),
+                                      self.__name__, event)
+                evt.moduleDataSource = datasource
+                self.notifyListeners(evt)
+
         if eventName == 'DNS_TEXT':
             # Google Website Verification
             # https://developers.google.com/site-verification/v1/getting_started

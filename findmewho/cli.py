@@ -24,6 +24,7 @@ def main():
     parser.add_argument("-t", "--threads", type=int, default=5, help="Concurrent domain workers (default: 5)")
     parser.add_argument("-p", "--pages", type=int, default=25, help="Max pages to crawl per domain (default: 25)")
     parser.add_argument("--timeout", type=int, default=45, help="Timeout per domain in seconds (default: 45)")
+    parser.add_argument("--deep", action="store_true", help="Run the slow account-hunting pass (dozens of external probes per email/name)")
     args = parser.parse_args()
 
     domains = []
@@ -47,7 +48,8 @@ def main():
         console.print("[red]No valid domains found to enrich.[/red]")
         sys.exit(1)
 
-    console.print(f"[cyan]findme-who enriching [bold]{len(domains)}[/bold] domains (Workers: {args.threads} | Max Pages: {args.pages})...[/cyan]")
+    mode = "DEEP (slow)" if args.deep else "fast"
+    console.print(f"[cyan]findme-who enriching [bold]{len(domains)}[/bold] domains ({mode} | Workers: {args.threads} | Max Pages: {args.pages})...[/cyan]")
 
     start_time = datetime.now()
     results = []
@@ -63,7 +65,7 @@ def main():
         task = progress.add_task("Running passive event graph...", total=len(domains))
         from concurrent.futures import ThreadPoolExecutor, as_completed
         with ThreadPoolExecutor(max_workers=args.threads) as executor:
-            future_to_dom = {executor.submit(enrich_domain, d, args.pages, args.timeout): d for d in domains}
+            future_to_dom = {executor.submit(enrich_domain, d, args.pages, args.timeout, args.deep): d for d in domains}
             for fut in as_completed(future_to_dom):
                 res = fut.result()
                 if res:

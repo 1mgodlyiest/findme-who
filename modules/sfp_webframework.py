@@ -23,7 +23,14 @@ regexps = dict({
     "ExtJS": list([r'[\'\"\=]ext\.js', 'extjs', r'\/ext\/*\.js']),
     "Mootools": list([r'\/mootools\/', r'mootools\-', r'mootools\.js']),
     "Dojo": list([r'\/dojo\/', r'[\'\"\=]dojo\-', r'[\'\"\=]dojo\.js']),
-    "Wordpress": list([r'\/wp-includes\/', r'\/wp-content\/'])
+    "Wordpress": list([r'\/wp-includes\/', r'\/wp-content\/']),
+    "Shopify": list([r'cdn\.shopify\.com', r'myshopify\.com', r'Shopify\.theme']),
+    "Wix": list([r'wixstatic\.com', r'static\.wixstatic', r'X-Wix-', r'_wixCssStates']),
+    "Squarespace": list([r'squarespace\.com', r'static1\.squarespace', r'Squarespace\.']),
+    "Webflow": list([r'\.webflow\.io', r'webflow\.js', r'data-wf-']),
+    "Drupal": list([r'\/sites\/default\/files\/', r'Drupal\.settings', r'\/core\/misc\/drupal']),
+    "Joomla": list([r'\/media\/jui\/', r'com_content', r'Joomla!']),
+    "Magento": list([r'\/skin\/frontend\/', r'Mage\.Cookies', r'\/mage\/'])
 })
 
 

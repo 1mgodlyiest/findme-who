@@ -23,8 +23,9 @@ from sflib import SpiderFoot
 from sfscan import SpiderFootScanner
 from spiderfoot import SpiderFootDb, SpiderFootHelpers
 
-# Active 20 Gold Passive Modules (100% Keyless, $0, Zero Port 25)
-ACTIVE_MODULES = [
+# Base pass — site crawl + DNS/WHOIS/SSL + on-page contact/tech extraction.
+# All keyless, $0, no port 25, and no per-email/name fan-out, so it stays fast.
+BASE_MODULES = [
     'sfp_spider',
     'sfp_whois',
     'sfp_dnsresolve',
@@ -40,11 +41,21 @@ ACTIVE_MODULES = [
     'sfp_names',
     'sfp_company',
     'sfp_social',
-    'sfp_gravatar',
-    'sfp_accounts',
-    'sfp_archiveorg',
     'sfp__stor_db'
 ]
+# sfp_archiveorg deliberately excluded: it calls the Wayback API once per URL,
+# which fans out across every cert-SAN subdomain and dominates wall-clock
+# (~12 min/domain on big brands). Site-history is marginal for lead gen —
+# whois/RDAP domain-age already covers "how established". Re-add if ever needed.
+
+# Deep pass — account hunting. Each probes dozens of external sites per email /
+# name / username, so it adds minutes per domain. Opt-in via deep=True only.
+DEEP_MODULES = ['sfp_accounts', 'sfp_gravatar', 'sfp_socialprofiles']
+
+# URL_WEB_FRAMEWORK names that are real CMS/site-builders (vs. JS libs like jQuery).
+CMS_FRAMEWORKS = {"Wordpress": "WordPress", "Shopify": "Shopify", "Wix": "Wix",
+                  "Squarespace": "Squarespace", "Webflow": "Webflow", "Drupal": "Drupal",
+                  "Joomla": "Joomla", "Magento": "Magento"}
 
 EMAIL_REGEX = re.compile(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+")
 AU_PHONE_REGEX = re.compile(r"(?:\+?61\s?|0)(?:[2-478]\s?\d{4}\s?\d{4}|4\d{2}\s?\d{3}\s?\d{3}|1300\s?\d{3}\s?\d{3}|1800\s?\d{3}\s?\d{3})")
@@ -63,6 +74,21 @@ def clean_domain_input(url_or_domain: str) -> str:
     if domain.startswith("www."):
         domain = domain[4:]
     return domain
+
+def _has_dmarc(domain: str) -> bool:
+    """True if _dmarc.<domain> publishes a DMARC TXT record.
+
+    No SpiderFoot module queries the _dmarc. subdomain, so we do the one lookup
+    directly. dnspython is already a dependency (sfp_dnsresolve uses it).
+    """
+    try:
+        import dns.resolver
+        answers = dns.resolver.resolve("_dmarc." + domain, "TXT")
+        return any("v=dmarc1" in b"".join(r.strings).decode("utf-8", "ignore").lower()
+                   for r in answers)
+    except Exception:
+        return False
+
 
 def format_and_classify_phone(raw_phone: str) -> tuple[str, str]:
     """Classify Australian phone into Mobile (SMS-Ready) vs Landline."""
@@ -86,18 +112,22 @@ def format_and_classify_phone(raw_phone: str) -> tuple[str, str]:
 
     return formatted, phone_type
 
-def enrich_domain(domain_raw: str, max_pages: int = 25, timeout: int = 45) -> dict:
+def enrich_domain(domain_raw: str, max_pages: int = 25, timeout: int = 45,
+                  deep: bool = False) -> dict:
     """
-    Enriches a single domain through findme-who's 22-module passive event graph.
-    
+    Enriches a single domain through findme-who's passive event graph.
+
     Args:
         domain_raw (str): Target domain or URL (e.g. "bondidental.com.au")
         max_pages (int): Max pages for sfp_spider to crawl (default 25)
         timeout (int): Scan timeout in seconds (default 45)
-        
+        deep (bool): Add the account-hunting modules (DEEP_MODULES). Slow —
+            dozens of external probes per email/name. Default False (fast pass).
+
     Returns:
         dict: Normalized lead intelligence record.
     """
+    module_list = BASE_MODULES + DEEP_MODULES if deep else list(BASE_MODULES)
     domain = clean_domain_input(domain_raw)
     if not domain:
         return {}
@@ -148,6 +178,7 @@ def enrich_domain(domain_raw: str, max_pages: int = 25, timeout: int = 45) -> di
             sf_modules['sfp_spider']['opts'].update({
                 'maxpages': max_pages, 'maxlevels': 2, 'pausesec': 0,
                 'filtermime': ['image/', 'video/', 'audio/'],
+                'nosubs': True,  # stay on the exact host — no staging/subdomains
             })
 
         # Base SpiderFoot options
@@ -181,7 +212,7 @@ def enrich_domain(domain_raw: str, max_pages: int = 25, timeout: int = 45) -> di
             scanId=scan_id,
             targetValue=domain,
             targetType="INTERNET_NAME",
-            moduleList=ACTIVE_MODULES,
+            moduleList=module_list,
             globalOpts=sf_config,
             start=True
         )
@@ -239,17 +270,19 @@ def enrich_domain(domain_raw: str, max_pages: int = 25, timeout: int = 45) -> di
 
                 elif evt_type == "URL_WEB_FRAMEWORK":
                     techs.add(data)
-                    if data.lower() == "wordpress":
-                        record["cms"] = "WordPress"
+                    if data in CMS_FRAMEWORKS:
+                        record["cms"] = CMS_FRAMEWORKS[data]  # real CMS; JS libs stay out
 
                 elif evt_type == "WEB_ANALYTICS_ID":
-                    # Payloads look like "Google Tag Manager: GTM-xxx", "Google Analytics: UA-xxx".
-                    # This module detects UA/GTM/AdSense only — no Meta Pixel, no GA4 G- IDs.
+                    # Payloads like "Google Tag Manager: GTM-x", "Google Analytics 4: G-x",
+                    # "Meta Pixel: <id>". (See sfp_webanalytics for the full set.)
                     d_low = data.lower()
                     if "tag manager" in d_low:
                         record["has_gtm"] = "Yes"
                     if "google analytics" in d_low:
                         record["has_ga4"] = "Yes"
+                    if "meta pixel" in d_low:
+                        record["has_meta_pixel"] = "Yes"
 
                 elif evt_type == "EMAILADDR":
                     em = data.lower()
@@ -286,6 +319,10 @@ def enrich_domain(domain_raw: str, max_pages: int = 25, timeout: int = 45) -> di
                     match = re.search(r"\b(20\d{2})\b", data)
                     if match:
                         record["latest_snapshot_year"] = match.group(1)
+
+        # DMARC — one direct lookup (_dmarc. subdomain, which no module queries)
+        if _has_dmarc(domain):
+            record["dmarc_configured"] = "Yes"
 
         # Fallback / Normalize Emails
         if emails:
@@ -338,16 +375,18 @@ def enrich_domain(domain_raw: str, max_pages: int = 25, timeout: int = 45) -> di
 
     return record
 
-def enrich_batch(domains: list[str], max_pages: int = 25, max_workers: int = 5, timeout: int = 45) -> list[dict]:
+def enrich_batch(domains: list[str], max_pages: int = 25, max_workers: int = 5,
+                 timeout: int = 45, deep: bool = False) -> list[dict]:
     """
     Enriches a batch of domains concurrently.
-    
+
     Args:
         domains (list[str]): List of target domains or URLs
         max_pages (int): Max pages for sfp_spider to crawl per domain (default 25)
         max_workers (int): Concurrent scan workers (default 5)
         timeout (int): Timeout per domain in seconds (default 45)
-        
+        deep (bool): Run the slow account-hunting pass per domain (default False)
+
     Returns:
         list[dict]: Enriched records for each domain.
     """
@@ -355,7 +394,7 @@ def enrich_batch(domains: list[str], max_pages: int = 25, max_workers: int = 5, 
     results = []
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_to_domain = {executor.submit(enrich_domain, d, max_pages, timeout): d for d in clean_domains}
+        future_to_domain = {executor.submit(enrich_domain, d, max_pages, timeout, deep): d for d in clean_domains}
         for future in as_completed(future_to_domain):
             try:
                 res = future.result()
@@ -376,6 +415,12 @@ def _selfcheck() -> None:
     assert format_and_classify_phone("(07) 2480 9414")[1] == "landline"
     assert format_and_classify_phone("garbage")[1] == "unknown"
     assert EMAIL_REGEX.match("info@bondidental.com.au")
+    # CMS whitelist maps builder names, drops JS libs
+    assert CMS_FRAMEWORKS.get("Shopify") == "Shopify"
+    assert "jQuery" not in CMS_FRAMEWORKS and "Bootstrap" not in CMS_FRAMEWORKS
+    # Deep modules are opt-in only — never in the fast base pass
+    assert not (set(DEEP_MODULES) & set(BASE_MODULES))
+    assert "sfp_accounts" in DEEP_MODULES and "sfp_accounts" not in BASE_MODULES
     print("engine self-check OK")
 
 
