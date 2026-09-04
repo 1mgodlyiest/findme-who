@@ -204,6 +204,12 @@ _PLACE_PHRASES = ("american samoa", "sint maarten", "tristan cunha", "norfolk is
 _CITIES = frozenset("""sydney melbourne brisbane perth adelaide canberra hobart darwin
 newcastle wollongong geelong townsville cairns toowoomba ballarat bendigo launceston
 london dublin auckland bondi parramatta chatswood manly""".split())
+# Legal-entity suffixes ("Accreditations Pty") and web-font family words
+# ("Helvetica Neue") that sfp_names emits as capitalised bigrams. Font list kept
+# to words that aren't plausible personal names (no "georgia"/"times").
+_COMPANY_SUFFIX = frozenset("pty ltd inc llc plc gmbh corp group holdings".split())
+_FONTS = frozenset("helvetica verdana roboto tahoma calibri garamond futura "
+                   "montserrat arial".split())
 
 _TITLE_RE = re.compile(
     r"\b(Dr|Doctor|Prof|Professor|Director|Owner|Founder|Principal|Partner|Proprietor|CEO)\.?\s+"
@@ -218,6 +224,8 @@ def _is_person_name(name: str) -> bool:
     if len(words) not in (2, 3):
         return False
     if low in _PLACE_PHRASES or any(w.lower() in (_COUNTRIES | _CITIES) for w in words):
+        return False
+    if any(w.lower() in (_COMPANY_SUFFIX | _FONTS) for w in words):
         return False
     if any(x in low for x in ("copyright", "privacy", "terms", "admin", "select", "choose")):
         return False
@@ -619,6 +627,9 @@ def _selfcheck() -> None:
     assert not _is_person_name("New South Wales")
     assert not _is_person_name("Select Country")
     assert not _is_person_name("Invisalign Sydney")  # city word
+    assert not _is_person_name("Helvetica Neue")     # web font
+    assert not _is_person_name("Accreditations Pty")  # company suffix
+    assert _is_person_name("Sarah Jones")            # real name, not blocked by font list
     assert _TITLE_RE.findall("Dr Jane Smith and Director Bob Lee") == \
         [("Dr", "Jane Smith"), ("Director", "Bob Lee")]
     print("engine self-check OK")
