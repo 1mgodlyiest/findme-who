@@ -209,7 +209,7 @@ london dublin auckland bondi parramatta chatswood manly""".split())
 # to words that aren't plausible personal names (no "georgia"/"times").
 _COMPANY_SUFFIX = frozenset("pty ltd inc llc plc gmbh corp group holdings".split())
 _FONTS = frozenset("helvetica verdana roboto tahoma calibri garamond futura "
-                   "montserrat arial".split())
+                   "montserrat arial segoe emoji".split())
 
 _TITLE_RE = re.compile(
     r"\b(Dr|Doctor|Prof|Professor|Director|Owner|Founder|Principal|Partner|Proprietor|CEO)\.?\s+"
@@ -628,6 +628,7 @@ def _selfcheck() -> None:
     assert not _is_person_name("Select Country")
     assert not _is_person_name("Invisalign Sydney")  # city word
     assert not _is_person_name("Helvetica Neue")     # web font
+    assert not _is_person_name("Segoe Emoji")        # Segoe UI Emoji font
     assert not _is_person_name("Accreditations Pty")  # company suffix
     assert _is_person_name("Sarah Jones")            # real name, not blocked by font list
     assert _TITLE_RE.findall("Dr Jane Smith and Director Bob Lee") == \
